@@ -40,6 +40,39 @@ export GEMINI_API_KEY=your_api_key_here
 streamlit run app.py
 ```
 
+## Deploy On Streamlit Community Cloud
+
+Yes. The app is structured for Streamlit Community Cloud deployment:
+
+- entrypoint: `app.py`
+- dependencies: `requirements.txt`
+- secrets: use Streamlit secrets management for `GEMINI_API_KEY`
+
+Recommended secret configuration:
+
+```toml
+GEMINI_API_KEY = "your_api_key_here"
+```
+
+Deployment flow:
+
+1. Push this repository to GitHub.
+2. In Streamlit Community Cloud, click `Create app`.
+3. Select the repository, branch `main`, and file `app.py`.
+4. In `Advanced settings`, paste your `secrets.toml` contents with `GEMINI_API_KEY`.
+5. Deploy.
+
+Important cloud caveat:
+
+Generated local files are not guaranteed to persist across sessions or reboots on Streamlit Community Cloud. For this app, that means the safest workflow is:
+
+- upload your testimonials CSV
+- optionally upload your previous master cache CSV
+- download the updated master cache CSV after each run
+- re-upload that cache CSV next time
+
+Treat the downloaded master cache CSV as the durable record when running in Community Cloud.
+
 ## How Incremental Reuse Works
 
 - Each testimonial row gets a stable `row_key`

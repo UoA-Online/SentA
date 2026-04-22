@@ -12,6 +12,15 @@ DEFAULT_CACHE_PATH = "master_testimonial_cache.csv"
 RESULT_STATE_KEY = "analysis_result"
 
 
+def default_api_key() -> str:
+    try:
+        if "GEMINI_API_KEY" in st.secrets:
+            return str(st.secrets["GEMINI_API_KEY"])
+    except Exception:
+        pass
+    return os.environ.get("GEMINI_API_KEY", "")
+
+
 def uploaded_file_signature(uploaded_file) -> str:
     if uploaded_file is None:
         return "none"
@@ -182,13 +191,17 @@ def main() -> None:
         st.subheader("Settings")
         api_key = st.text_input(
             "Gemini API key",
-            value=os.environ.get("GEMINI_API_KEY", ""),
+            value=default_api_key(),
             type="password",
             help="Required for rows that are not already in the cache.",
         )
         model = st.text_input("Model", value=pipeline.MODEL_DEFAULT)
         local_cache_path = st.text_input("Local master cache path", value=DEFAULT_CACHE_PATH)
-        persist_local = st.checkbox("Write updated cache to local file", value=True)
+        persist_local = st.checkbox(
+            "Write updated cache to local file",
+            value=True,
+            help="Useful locally. On Streamlit Community Cloud, generated files are not guaranteed to persist across sessions or reboots.",
+        )
         force_reprocess = st.checkbox("Force reprocess uploaded rows", value=False)
         max_rows = st.number_input(
             "Max rows to process",
@@ -246,6 +259,10 @@ def main() -> None:
         st.caption(
             f"Test mode active: processing the first {len(prepared_upload)} rows from an upload of {original_uploaded_rows} rows."
         )
+    st.caption(
+        "For Streamlit Community Cloud, treat the downloaded master cache CSV as the source of truth. "
+        "Local files created by the app are not guaranteed to persist."
+    )
 
     with st.expander("Preview cache matching", expanded=False):
         st.dataframe(
