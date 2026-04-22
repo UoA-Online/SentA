@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.streamlit/secrets.toml
+
+# macOS
+.DS_Store
+
+# Local data, caches, and exports
+master_testimonial_cache.csv
+testimonials*.csv
+*_checkpoint.csv
+test5_progress.json
+
+# Research / working artifacts not intended for the repo
+*.ipynb
+*.docx
+*.pkpasses
+*.app/
+test5_improved.py
