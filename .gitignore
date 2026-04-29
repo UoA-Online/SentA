@@ -21,6 +21,7 @@ env/
 master_testimonial_cache.csv
 testimonials*.csv
 *_checkpoint.csv
+.streamlit_checkpoints/
 test5_progress.json
 
 # Research / working artifacts not intended for the repo

@@ -9,6 +9,8 @@ import pandas as pd
 
 PIPELINE_VERSION = "2026-04-22-streamlit-cache-v2"
 MODEL_DEFAULT = "gemini-2.5-pro"
+REQUEST_TIMEOUT_MS = 90_000
+MODEL_CALL_RETRIES = 4
 
 RECOMMEND_COL = "Would you recommend studying with University of Aberdeen Online to other people?"
 CONSENT_COL = "Are you happy for us to use your feedback in University of Aberdeen marketing materials, including our website and on social media?"
@@ -618,6 +620,41 @@ CONTRAST_CUES = [
     "except",
 ]
 
+BATCH_STOP_ERROR_PATTERNS = [
+    "429",
+    "401",
+    "403",
+    "500",
+    "503",
+    "504",
+    "api key",
+    "auth",
+    "deadline exceeded",
+    "permission_denied",
+    "quota",
+    "rate limit",
+    "rate_limit",
+    "readtimeout",
+    "remoteprotocolerror",
+    "resource_exhausted",
+    "service unavailable",
+    "timed out",
+    "timeout",
+    "unauthenticated",
+    "unavailable",
+]
+
+
+class BatchStoppedError(RuntimeError):
+    def __init__(self, row_label: str, stage: str, meta: Dict[str, str]) -> None:
+        self.row_label = row_label
+        self.stage = stage
+        self.meta = meta
+        error_type = clean(meta.get("error_type", "api_error"))
+        error_message = clean(meta.get("error_message", ""))
+        detail = f"{error_type}: {error_message}".strip(": ")
+        super().__init__(f"Stopped at {row_label} during {stage}: {detail}")
+
 
 def clean(value: Any) -> str:
     if pd.isna(value):
@@ -672,6 +709,28 @@ def backoff_sleep(attempt: int) -> None:
     time.sleep((2**attempt) * 0.6 + random.random() * 0.3)
 
 
+def api_error_should_stop_batch(meta: Dict[str, str]) -> bool:
+    if clean(meta.get("status", "")) not in {"fallback", "skipped"}:
+        return False
+    if clean(meta.get("mode", "")) == "skipped" and not clean(meta.get("error_message", "")):
+        return False
+
+    error_text = " ".join(
+        [
+            clean(meta.get("error_type", "")),
+            clean(meta.get("error_message", "")),
+        ]
+    ).lower()
+    return any(pattern in error_text for pattern in BATCH_STOP_ERROR_PATTERNS)
+
+
+def schema_error_should_use_prompt_only(error_type: str, error_message: str) -> bool:
+    text = f"{clean(error_type)} {clean(error_message)}".lower()
+    if any(pattern in text for pattern in BATCH_STOP_ERROR_PATTERNS):
+        return False
+    return "clienterror" in text or "invalid_argument" in text or "response_json_schema" in text
+
+
 def make_config(system_instruction: str, schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     config: Dict[str, Any] = {
         "system_instruction": system_instruction,
@@ -685,8 +744,15 @@ def make_config(system_instruction: str, schema: Optional[Dict[str, Any]]) -> Di
 
 def get_client(api_key: str):
     from google import genai
+    from google.genai import types
 
-    return genai.Client(api_key=clean(api_key))
+    return genai.Client(
+        api_key=clean(api_key),
+        http_options=types.HttpOptions(
+            timeout=REQUEST_TIMEOUT_MS,
+            retry_options=types.HttpRetryOptions(attempts=1),
+        ),
+    )
 
 
 def available_text_cols(df: pd.DataFrame) -> List[Tuple[str, str]]:
@@ -1336,7 +1402,19 @@ def apply_verbatim_quote_fallback(
     return result, used_fallback
 
 
-def call_model(client: Any, model: str, prompt: str, system_instruction: str, schema: Dict[str, Any], retries: int = 4) -> Tuple[Optional[Dict[str, Any]], Dict[str, str]]:
+def auth_error_should_not_retry(error_type: str, error_message: str) -> bool:
+    text = f"{clean(error_type)} {clean(error_message)}".lower()
+    return any(pattern in text for pattern in ["401", "403", "api key", "auth", "permission_denied", "unauthenticated"])
+
+
+def call_model(
+    client: Any,
+    model: str,
+    prompt: str,
+    system_instruction: str,
+    schema: Dict[str, Any],
+    retries: int = MODEL_CALL_RETRIES,
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, str]]:
     last_type = ""
     last_message = ""
     last_raw = ""
@@ -1363,11 +1441,15 @@ def call_model(client: Any, model: str, prompt: str, system_instruction: str, sc
         except Exception as exc:
             last_type = type(exc).__name__
             last_message = clean(str(exc))
-            if mode == "structured" and last_type == "ClientError":
+            if mode == "structured" and schema_error_should_use_prompt_only(last_type, last_message):
                 mode = "prompt_only_json"
-                backoff_sleep(attempt)
+                if attempt < retries - 1:
+                    backoff_sleep(attempt)
                 continue
-            backoff_sleep(attempt)
+            if auth_error_should_not_retry(last_type, last_message):
+                break
+            if attempt < retries - 1:
+                backoff_sleep(attempt)
 
     return None, {
         "status": "fallback",
@@ -1497,20 +1579,28 @@ def analyse_rows(
     api_key: str,
     model: str = MODEL_DEFAULT,
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    record_callback: Optional[Callable[[Dict[str, Any], int, int, str], None]] = None,
+    row_delay_seconds: float = 0.0,
 ) -> pd.DataFrame:
     client = get_client(api_key)
     records: List[Dict[str, Any]] = []
     total = len(df)
 
     for position, (_, row) in enumerate(df.iterrows(), start=1):
+        row_label = normalize_row_id(row.get("Response ID", "")) or row["row_key"]
         comment_text = clean(row.get("comment_text", ""))
         recommend = clean(row.get(RECOMMEND_COL, ""))
         analysis, analysis_meta = analyse_comment(client, model, comment_text, recommend)
+        if api_error_should_stop_batch(analysis_meta):
+            raise BatchStoppedError(row_label, "analysis", analysis_meta)
+
         profile = build_quote_candidate_profile(comment_text)
 
         should_extract, skip_reason = should_extract_quote(analysis, bool(row.get("marketing_consent_yes", True)), comment_text, profile)
         if should_extract:
             quote, quote_meta = extract_quote(client, model, comment_text, analysis, profile)
+            if api_error_should_stop_batch(quote_meta) and not quote_status_is_ok(quote_meta.get("status", "")):
+                raise BatchStoppedError(row_label, "quote extraction", quote_meta)
         else:
             quote = quote_fallback(skip_reason)
             quote_meta = {
@@ -1529,8 +1619,14 @@ def analyse_rows(
         record.update(build_result_payload(analysis, quote, analysis_meta, quote_meta))
         records.append(record)
 
+        if record_callback is not None:
+            record_callback(record, position, total, row_label)
+
         if progress_callback is not None:
-            progress_callback(position, total, normalize_row_id(row.get("Response ID", "")) or row["row_key"])
+            progress_callback(position, total, row_label)
+
+        if row_delay_seconds > 0 and position < total:
+            time.sleep(row_delay_seconds)
 
     return pd.DataFrame(records)
 

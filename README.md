@@ -84,6 +84,14 @@ Treat the downloaded master cache CSV as the durable record when running in Comm
 
 If only 5 rows are new or changed, only those 5 should be sent for analysis.
 
+## Long Runs, Resume, and API Limits
+
+- The app checkpoints each completed row to `.streamlit_checkpoints/`.
+- If a forced run is interrupted, click `Resume Analysis`; already checkpointed rows are skipped.
+- If Gemini returns quota, rate-limit, auth, or timeout-style failures after retries, the app pauses instead of caching failed neutral fallback rows.
+- Use `Delay between API rows (seconds)` when forced runs hit request-per-minute limits.
+- On Streamlit Community Cloud, still download the updated master cache after each successful or partial run. Local checkpoint files are best-effort and may disappear if the cloud container restarts.
+
 ## Testing
 
 Run the regression tests:

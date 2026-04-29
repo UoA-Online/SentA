@@ -1,5 +1,7 @@
 import unittest
 
+import pandas as pd
+
 import testimonial_pipeline as pipeline
 
 
@@ -96,6 +98,35 @@ class TestPipelineRegression(unittest.TestCase):
             pipeline.quote_status_from_payload({"short_quote": "Great support.", "long_quote": "The course was fantastic and flexible."}),
             "ok_short_and_long",
         )
+
+    def test_api_quota_failure_stops_batch_instead_of_caching_fallback(self) -> None:
+        class FailingModels:
+            def generate_content(self, **kwargs):
+                raise RuntimeError("429 RESOURCE_EXHAUSTED quota exceeded")
+
+        class FailingClient:
+            models = FailingModels()
+
+        original_get_client = pipeline.get_client
+        pipeline.get_client = lambda api_key: FailingClient()
+        try:
+            df = pd.DataFrame(
+                [
+                    {
+                        "Response ID": "1",
+                        "comment_text": "why_recommend: The course was excellent and the tutor support was helpful.",
+                        "marketing_consent_yes": True,
+                        "row_key": "response_id::1",
+                        "content_hash": "hash-1",
+                        "pipeline_version": pipeline.PIPELINE_VERSION,
+                    }
+                ]
+            )
+
+            with self.assertRaises(pipeline.BatchStoppedError):
+                pipeline.analyse_rows(df, api_key="fake")
+        finally:
+            pipeline.get_client = original_get_client
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import hashlib
 import os
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -10,6 +10,8 @@ import testimonial_pipeline as pipeline
 
 DEFAULT_CACHE_PATH = "master_testimonial_cache.csv"
 RESULT_STATE_KEY = "analysis_result"
+PROGRESS_STATE_KEY = "analysis_progress"
+CHECKPOINT_DIR = Path(".streamlit_checkpoints")
 
 
 def default_api_key() -> str:
@@ -53,11 +55,22 @@ def render_results(result_state: Dict[str, object]) -> None:
     output_with_internal = result_state["output_with_internal"]
     updated_cache = result_state["updated_cache"]
     saved_path = result_state.get("saved_path")
+    completed_count = int(result_state.get("completed_count", len(visible_output)))
+    is_partial = bool(result_state.get("partial", False))
+    stop_message = str(result_state.get("stop_message", ""))
+    checkpoint_path = result_state.get("checkpoint_path")
 
-    success_message = f"Generated {len(visible_output)} scored rows."
+    success_message = f"Generated {completed_count} of {len(visible_output)} scored rows."
     if saved_path:
         success_message += f" Updated cache written to `{saved_path}`."
-    st.success(success_message)
+    if is_partial:
+        st.warning(success_message)
+        if stop_message:
+            st.caption(stop_message)
+        if checkpoint_path:
+            st.caption(f"Saved progress checkpoint: `{checkpoint_path}`")
+    else:
+        st.success(success_message)
 
     summary_cols = st.columns(5)
     summary_cols[0].metric("Analysis OK Rows", int((output_with_internal["analysis_status"] == "ok").sum()))
@@ -87,6 +100,7 @@ def render_results(result_state: Dict[str, object]) -> None:
             data=df_to_csv_bytes(visible_output),
             file_name="testimonials_scored_output.csv",
             mime="text/csv",
+            on_click="ignore",
         )
     with download_col_2:
         st.download_button(
@@ -94,6 +108,7 @@ def render_results(result_state: Dict[str, object]) -> None:
             data=df_to_csv_bytes(updated_cache),
             file_name="master_testimonial_cache.csv",
             mime="text/csv",
+            on_click="ignore",
         )
 
 
@@ -112,6 +127,7 @@ def render_field_dictionary() -> None:
             file_name="generated_field_dictionary.csv",
             mime="text/csv",
             key="download_generated_field_dictionary",
+            on_click="ignore",
         )
 
 
@@ -178,6 +194,99 @@ def persist_cache_if_requested(cache_df: pd.DataFrame, persist_local: bool, loca
     return str(cache_path)
 
 
+def checkpoint_path_for_signature(run_signature: str) -> Path:
+    digest = hashlib.sha256(run_signature.encode("utf-8")).hexdigest()
+    return CHECKPOINT_DIR / f"{digest}.csv"
+
+
+def result_columns() -> List[str]:
+    return pipeline.MATCH_COLUMNS + pipeline.RESULT_COLUMNS
+
+
+def empty_result_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=result_columns())
+
+
+def normalize_result_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return empty_result_df()
+    normalized = pipeline.normalize_existing_cache_df(df)
+    return normalized[result_columns()].drop_duplicates(subset=pipeline.MATCH_COLUMNS, keep="last").reset_index(drop=True)
+
+
+def combine_result_frames(*frames: pd.DataFrame) -> pd.DataFrame:
+    populated = [normalize_result_df(frame) for frame in frames if frame is not None and not frame.empty]
+    if not populated:
+        return empty_result_df()
+    combined = pd.concat(populated, ignore_index=True)
+    return combined.drop_duplicates(subset=pipeline.MATCH_COLUMNS, keep="last").reset_index(drop=True)
+
+
+def load_checkpoint_results(run_signature: str) -> Tuple[pd.DataFrame, Path]:
+    checkpoint_path = checkpoint_path_for_signature(run_signature)
+    if not checkpoint_path.exists():
+        return empty_result_df(), checkpoint_path
+    try:
+        return normalize_result_df(pd.read_csv(checkpoint_path)), checkpoint_path
+    except Exception:
+        return empty_result_df(), checkpoint_path
+
+
+def write_checkpoint_results(run_signature: str, result_df: pd.DataFrame) -> Path:
+    checkpoint_path = checkpoint_path_for_signature(run_signature)
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = checkpoint_path.with_suffix(".tmp")
+    normalize_result_df(result_df).to_csv(temp_path, index=False)
+    os.replace(temp_path, checkpoint_path)
+    return checkpoint_path
+
+
+def remove_completed_rows(to_process: pd.DataFrame, completed_results: pd.DataFrame) -> pd.DataFrame:
+    if to_process.empty or completed_results.empty:
+        return to_process
+    completed_keys = completed_results[pipeline.MATCH_COLUMNS].drop_duplicates()
+    remaining = to_process.merge(completed_keys, on=pipeline.MATCH_COLUMNS, how="left", indicator=True)
+    return remaining[remaining["_merge"] == "left_only"].drop(columns="_merge")
+
+
+def completed_output_rows(output_with_internal: pd.DataFrame) -> pd.DataFrame:
+    if "analysis_status" not in output_with_internal.columns:
+        return output_with_internal.iloc[0:0].copy()
+    completed_mask = output_with_internal["analysis_status"].fillna("").astype(str).str.strip().ne("")
+    return output_with_internal[completed_mask].copy()
+
+
+def build_result_state(
+    *,
+    run_signature: str,
+    prepared_upload: pd.DataFrame,
+    result_rows: pd.DataFrame,
+    cache_df: pd.DataFrame,
+    persist_local: bool,
+    local_cache_path: str,
+    partial: bool,
+    checkpoint_path: Optional[Path] = None,
+    stop_message: str = "",
+) -> Dict[str, object]:
+    output_with_internal = pipeline.merge_results_into_upload(prepared_upload, normalize_result_df(result_rows))
+    visible_output = pipeline.strip_internal_columns(output_with_internal)
+    completed_output = completed_output_rows(output_with_internal)
+    updated_cache = pipeline.upsert_master_cache(cache_df, completed_output) if not completed_output.empty else pipeline.normalize_existing_cache_df(cache_df)
+    saved_path = persist_cache_if_requested(updated_cache, persist_local, local_cache_path)
+
+    return {
+        "run_signature": run_signature,
+        "visible_output": visible_output,
+        "output_with_internal": output_with_internal,
+        "updated_cache": updated_cache,
+        "saved_path": saved_path,
+        "completed_count": len(completed_output),
+        "partial": partial,
+        "stop_message": stop_message,
+        "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else "",
+    }
+
+
 def main() -> None:
     st.set_page_config(page_title="Testimonial Sentiment Analysis", layout="wide")
 
@@ -209,6 +318,14 @@ def main() -> None:
             value=0,
             step=1,
             help="Set to 0 to use the full upload. Any positive value limits testing to the first N rows.",
+        )
+        row_delay_seconds = st.number_input(
+            "Delay between API rows (seconds)",
+            min_value=0.0,
+            max_value=120.0,
+            value=0.0,
+            step=0.5,
+            help="Use a delay if Gemini returns rate-limit or quota errors during larger forced runs.",
         )
 
     upload_col, cache_col = st.columns(2)
@@ -247,6 +364,15 @@ def main() -> None:
     prepared_upload = pipeline.prepare_input_df(input_df)
     cache_df, cache_source = load_cache_source(uploaded_cache, local_cache_path)
     reusable, to_process, diagnostics = split_upload_vs_cache(prepared_upload, cache_df, force_reprocess)
+    checkpoint_results, checkpoint_path = load_checkpoint_results(current_run_signature)
+    progress_state = st.session_state.get(PROGRESS_STATE_KEY)
+    if progress_state and progress_state.get("run_signature") == current_run_signature:
+        checkpoint_results = combine_result_frames(checkpoint_results, progress_state.get("result_df", empty_result_df()))
+
+    checkpoint_count = len(checkpoint_results)
+    if checkpoint_count > 0:
+        reusable = combine_result_frames(reusable, checkpoint_results)
+        to_process = remove_completed_rows(to_process, checkpoint_results)
 
     stats = st.columns(4)
     stats[0].metric("Uploaded Rows", len(prepared_upload))
@@ -255,6 +381,16 @@ def main() -> None:
     stats[3].metric("Rows To Analyze", len(to_process))
 
     st.caption(f"Cache source: {cache_source}")
+    if checkpoint_count > 0:
+        st.caption(f"Resuming from saved progress: {checkpoint_count} completed row(s) in `{checkpoint_path}`.")
+        if st.button("Clear Saved Progress"):
+            try:
+                checkpoint_path.unlink()
+            except FileNotFoundError:
+                pass
+            st.session_state.pop(PROGRESS_STATE_KEY, None)
+            st.session_state.pop(RESULT_STATE_KEY, None)
+            st.rerun()
     if max_rows > 0:
         st.caption(
             f"Test mode active: processing the first {len(prepared_upload)} rows from an upload of {original_uploaded_rows} rows."
@@ -271,7 +407,22 @@ def main() -> None:
             hide_index=True,
         )
 
-    run_clicked = st.button("Run Analysis", type="primary")
+    if not has_current_results and checkpoint_count > 0 and len(to_process) == 0:
+        result_state = build_result_state(
+            run_signature=current_run_signature,
+            prepared_upload=prepared_upload,
+            result_rows=reusable,
+            cache_df=cache_df,
+            persist_local=persist_local,
+            local_cache_path=local_cache_path,
+            partial=False,
+            checkpoint_path=checkpoint_path,
+        )
+        st.session_state[RESULT_STATE_KEY] = result_state
+        has_current_results = True
+
+    run_label = "Resume Analysis" if checkpoint_count > 0 and len(to_process) > 0 else "Run Analysis"
+    run_clicked = st.button(run_label, type="primary")
     if run_clicked:
         if len(to_process) > 0 and not api_key.strip():
             st.error("Enter a Gemini API key to analyze rows that are not already in the cache.")
@@ -279,6 +430,7 @@ def main() -> None:
 
         progress_bar = st.progress(0)
         status_text = st.empty()
+        checkpoint_holder = {"df": checkpoint_results.copy()}
 
         try:
             if len(to_process) > 0:
@@ -286,43 +438,87 @@ def main() -> None:
                     progress_bar.progress(done / max(total, 1))
                     status_text.write(f"Analyzing row {done}/{total}: `{row_label}`")
 
+                def on_record(record: Dict[str, object], done: int, total: int, row_label: str) -> None:
+                    checkpoint_holder["df"] = combine_result_frames(checkpoint_holder["df"], pd.DataFrame([record]))
+                    write_checkpoint_results(current_run_signature, checkpoint_holder["df"])
+                    st.session_state[PROGRESS_STATE_KEY] = {
+                        "run_signature": current_run_signature,
+                        "result_df": checkpoint_holder["df"],
+                        "checkpoint_path": str(checkpoint_path),
+                    }
+
                 fresh_results = pipeline.analyse_rows(
                     to_process,
                     api_key=api_key,
                     model=model,
                     progress_callback=on_progress,
+                    record_callback=on_record,
+                    row_delay_seconds=float(row_delay_seconds),
                 )
             else:
-                fresh_results = pd.DataFrame(columns=pipeline.MATCH_COLUMNS + pipeline.RESULT_COLUMNS)
+                fresh_results = empty_result_df()
                 progress_bar.progress(1.0)
                 status_text.write("All uploaded rows were already covered by the cache.")
 
-            reusable_results = reusable[pipeline.MATCH_COLUMNS + pipeline.RESULT_COLUMNS].copy()
-            all_results = pd.concat([reusable_results, fresh_results], ignore_index=True)
-            output_with_internal = pipeline.merge_results_into_upload(prepared_upload, all_results)
-            visible_output = pipeline.strip_internal_columns(output_with_internal)
+            all_results = combine_result_frames(reusable, checkpoint_holder["df"], fresh_results)
+            result_state = build_result_state(
+                run_signature=current_run_signature,
+                prepared_upload=prepared_upload,
+                result_rows=all_results,
+                cache_df=cache_df,
+                persist_local=persist_local,
+                local_cache_path=local_cache_path,
+                partial=False,
+                checkpoint_path=checkpoint_path,
+            )
 
-            updated_cache = pipeline.upsert_master_cache(cache_df, output_with_internal)
-            saved_path = persist_cache_if_requested(updated_cache, persist_local, local_cache_path)
-
+        except pipeline.BatchStoppedError as exc:
+            progress_bar.empty()
+            status_text.write("Analysis paused. Completed rows were saved and can be resumed.")
+            all_results = combine_result_frames(reusable, checkpoint_holder["df"])
+            result_state = build_result_state(
+                run_signature=current_run_signature,
+                prepared_upload=prepared_upload,
+                result_rows=all_results,
+                cache_df=cache_df,
+                persist_local=persist_local,
+                local_cache_path=local_cache_path,
+                partial=True,
+                checkpoint_path=checkpoint_path,
+                stop_message=str(exc),
+            )
+            st.session_state[RESULT_STATE_KEY] = result_state
+            has_current_results = True
+            st.error("Gemini stopped responding cleanly. Saved completed rows; click `Resume Analysis` later to continue only the missing rows.")
         except Exception as exc:
             progress_bar.empty()
             status_text.empty()
-            st.error(f"Analysis failed: {exc}")
+            if len(checkpoint_holder["df"]) == 0:
+                st.error(f"Analysis failed: {exc}")
+                st.exception(exc)
+                return
+            all_results = combine_result_frames(reusable, checkpoint_holder["df"])
+            result_state = build_result_state(
+                run_signature=current_run_signature,
+                prepared_upload=prepared_upload,
+                result_rows=all_results,
+                cache_df=cache_df,
+                persist_local=persist_local,
+                local_cache_path=local_cache_path,
+                partial=True,
+                checkpoint_path=checkpoint_path,
+                stop_message=f"Analysis failed after saving completed rows: {exc}",
+            )
+            st.session_state[RESULT_STATE_KEY] = result_state
+            has_current_results = True
+            st.error("Analysis failed after saving completed rows. Fix the issue, then click `Resume Analysis` to continue only the missing rows.")
             st.exception(exc)
-            return
 
-        progress_bar.progress(1.0)
-        status_text.write("Analysis complete.")
-        st.session_state[RESULT_STATE_KEY] = {
-            "run_signature": current_run_signature,
-            "visible_output": visible_output,
-            "output_with_internal": output_with_internal,
-            "updated_cache": updated_cache,
-            "saved_path": saved_path,
-        }
-        result_state = st.session_state[RESULT_STATE_KEY]
-        has_current_results = True
+        if not has_current_results:
+            progress_bar.progress(1.0)
+            status_text.write("Analysis complete.")
+            st.session_state[RESULT_STATE_KEY] = result_state
+            has_current_results = True
 
     if has_current_results:
         render_results(result_state)
