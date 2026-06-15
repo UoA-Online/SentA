@@ -84,7 +84,7 @@ GENERATED_FIELD_METADATA = [
         "field": "comment_text",
         "category": "Input prep",
         "appears_in": "Scored upload CSV and master cache CSV",
-        "description": "Normalized combined comment built from the available testimonial text fields and used as the main analysis evidence.",
+        "description": "Normalised combined comment built from the available testimonial text fields and used as the main analysis evidence.",
     },
     {
         "field": "comment_word_count",
