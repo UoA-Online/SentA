@@ -418,12 +418,12 @@ QUOTE_LENGTH_LABELS = ["short_ready", "long_ready", "both", "none"]
 QUOTE_SENTIMENT_LABELS = ["strong_positive", "positive", "neutral", "mixed", "negative", "not_suitable"]
 
 QUOTE_SOURCE_PRIORITY = {
-    "why_recommend": 0,
-    "your_future": 1,
-    "why_aberdeen": 2,
-    "anything_else": 3,
-    "typical_day": 4,
-    "learning_helped": 8,
+    "why_recommend": 5,
+    "your_future": 4,
+    "why_aberdeen": 3,
+    "anything_else": 2,
+    "typical_day": 1,
+    "learning_helped": 0,
     "negative_feedback": 9,
 }
 
