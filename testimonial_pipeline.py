@@ -1319,8 +1319,8 @@ def normalize_quote_payload(payload: Dict[str, Any], comment_text: str) -> Dict[
     if long_quote and not is_verbatim_quote(long_quote, comment_text):
         long_quote = ""
 
-    result["short_quote"] = "short_quote"
-    result["long_quote"] = "long_quote"
+    result["short_quote"] = short_quote
+    result["long_quote"] = long_quote
     result["source_field"] = ""
     result["length_fit"] = coerce_enum(payload.get("length_fit", "none"), QUOTE_LENGTH_LABELS, "none")
     result["sentiment_fit"] = coerce_enum(payload.get("sentiment_fit", "not_suitable"), QUOTE_SENTIMENT_LABELS, "not_suitable")
