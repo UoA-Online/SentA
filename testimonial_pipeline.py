@@ -16,12 +16,13 @@ RECOMMEND_COL = "Would you recommend studying with University of Aberdeen Online
 CONSENT_COL = "Are you happy for us to use your feedback in University of Aberdeen marketing materials, including our website and on social media?"
 
 TEXT_COLS = [
-    ("typical_day", "Typical day like for you as an online student?"),
+    ("typical_day", "Tell us about a typical day for you as an online student."),
     ("learning_helped", "Did your online learning help you with any of the following?"),
     ("why_recommend", "Thanks for recommending us! Can you tell us why?"),
-    ("negative_feedback", "We’re sorry to hear that. Let us know if there's any feedback you'd like us to pass to a relevant member of staff"),
+    ("negative_feedback", "We’re sorry to hear that. Let us know if there's any feedback you'd like to share with us."),
     ("anything_else", "Is there anything else you’d like to share?"),
     ("why_aberdeen", "What attracted you to the University of Aberdeen?"),
+    ("your_future", "How do you feel about your future as a result of your online studies?"),
 ]
 
 MATCH_COLUMNS = ["row_key", "content_hash", "pipeline_version"]
@@ -418,10 +419,11 @@ QUOTE_SENTIMENT_LABELS = ["strong_positive", "positive", "neutral", "mixed", "ne
 
 QUOTE_SOURCE_PRIORITY = {
     "why_recommend": 0,
-    "why_aberdeen": 1,
-    "anything_else": 2,
-    "learning_helped": 3,
+    "your_future": 1,
+    "why_aberdeen": 2,
+    "anything_else": 3,
     "typical_day": 4,
+    "learning_helped": 8,
     "negative_feedback": 9,
 }
 
