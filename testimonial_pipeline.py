@@ -64,8 +64,6 @@ RESULT_COLUMNS = [
     "quote_error_type",
     "quote_error_message",
     "quote_raw_text",
-    "quote_short",
-    "quote_long",
 ]
 
 DERIVED_COLUMNS = [
@@ -234,7 +232,7 @@ GENERATED_FIELD_METADATA = [
         "description": "Short verbatim quote intended for marketing-style use when a suitable quote exists.",
     },
     {
-        "field": "quote_long_case_study",
+        "field": "_case_study",
         "category": "Quote extraction",
         "appears_in": "Scored upload CSV and master cache CSV",
         "description": "Longer verbatim quote intended for case-study or fuller editorial use.",
@@ -1575,8 +1573,6 @@ def build_result_payload(analysis: Dict[str, Any], quote: Dict[str, Any], analys
         "quote_error_type": quote_meta["error_type"],
         "quote_error_message": quote_meta["error_message"],
         "quote_raw_text": quote_meta["raw_text"],
-        "quote_short": quote["short_quote"],
-        "quote_long": quote["long_quote"],
     }
 
 
