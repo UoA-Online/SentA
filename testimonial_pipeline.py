@@ -419,8 +419,8 @@ QUOTE_SOURCE_PRIORITY = {
     "why_recommend": 5,
     "your_future": 4,
     "why_aberdeen": 3,
-    "anything_else": 2,
-    "typical_day": 1,
+    "anything_else": 1,
+    "typical_day": 2,
     "learning_helped": 0,
     "negative_feedback": 9,
 }
